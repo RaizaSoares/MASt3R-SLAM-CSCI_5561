@@ -130,7 +130,6 @@ def run_backend(states, keyframes):
         if len(states.global_optimizer_tasks) > 0:
             idx = states.global_optimizer_tasks.pop(0)
 
-
 if __name__ == "__main__":
     mp.set_start_method("spawn")
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -281,6 +280,8 @@ if __name__ == "__main__":
             states.queue_global_optimization(len(keyframes) - 1)
 
         run_backend(states, keyframes)
+
+        eval.computeSegmentationAndObjectDistance(keyframes=keyframes, c_conf_threshold=last_msg.C_conf_threshold)
 
         # log time
         if i % 30 == 0:
