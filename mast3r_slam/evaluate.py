@@ -10,10 +10,7 @@ from mast3r_slam.config import config
 from mast3r_slam.geometry import constrain_points_to_ray
 from plyfile import PlyData, PlyElement
 
-#EDIT Raiza
 import detectron2
-# from detectron2.utils.logger import setup_logger
-# setup_logger()
 
 import json
 import random
@@ -27,9 +24,6 @@ from detectron2.engine import DefaultPredictor
 from detectron2.config import get_cfg
 from detectron2.utils.visualizer import Visualizer, ColorMode
 from detectron2.data import MetadataCatalog, DatasetCatalog
-
-
-#EDIT Raiza End
 
 
 def prepare_savedir(args, dataset):
@@ -92,11 +86,11 @@ def save_reconstruction(savedir, filename, keyframes, c_conf_threshold):
 
 def segment(im):
 
-    simplf_classes = ['person', 'car', 'motorcycle',  'bus', 'train', 'truck', 'traffic light','stop sign']
+    simplf_classes = ['person', 'car', 'motorcycle',  'bus', 'train', 'truck', 'traffic light','stop sign', 'building']
     
     cfg = get_cfg()   # get a fresh new config
     cfg.MODEL.DEVICE = "cpu"
-    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.3  # Set confidence threshold
+    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.5  # Set confidence threshold
 
     cfg.merge_from_file(model_zoo.get_config_file("Misc/panoptic_fpn_R_101_dconv_cascade_gn_3x.yaml"))
     cfg.MODEL.WEIGHTS = "detectron2://Misc/panoptic_fpn_R_101_dconv_cascade_gn_3x/139797668/model_final_be35db.pkl"
@@ -115,12 +109,13 @@ def segment(im):
 
     for seg in segments_info:
         class_name = meta.thing_classes[seg['category_id']] if seg['isthing'] else meta.stuff_classes[seg['category_id']]
+        print(class_name)
         if class_name in simplf_classes:
-            print(f"Class name {class_name}: with id: {seg['id']}")
+            # print(f"Class name {class_name}: with id: {seg['id']}")
             filtered_mask[mask == seg['id']] = seg['id']  # retain only selected ids
-            id_to_class_map[seg['id']] = class_name  # Store mapping
+            id_to_class_map[seg['id']] = f"{class_name} (ID: {seg['id']})"  # Append segid since there could be multiple things of the same class
 
-    #np.savetxt("../segmask.txt", filtered_mask, delimiter=" ", fmt="%.4f")  # Saves with 4 decim
+    #np.savetxt("../segmask.txt", filtered_mask, delimiter=" ", fmt="%.4f")
 
     image_rgb = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
     v = Visualizer(
@@ -145,45 +140,51 @@ def segment(im):
 
     return filtered_mask, id_to_class_map
 
-def extract_segmented_points_torch(seg_mask_torch, keyframe, id_to_class_mapping):
-    device = "cuda:0"
-    
-    # Get pixel locations of segmented regions
-    obj_pixels = torch.nonzero(seg_mask_torch > 0)  # Shape: (N, 2)
+def extract_segmented_points_torch(seg_mask_torch, keyframe, id_to_class_map):
+    """Extract 3D points for each segmented object using PyTorch."""
+    device = keyframe.K.device if keyframe.K is not None else "cuda:0"
 
-    # Convert pixels to homogeneous form
-    obj_pixels_homog = torch.cat([
-        obj_pixels, torch.ones((obj_pixels.shape[0], 1), device=device)
-    ], dim=1).T  # Shape: (3, N)
+    # Initialize a dictionary to store segmented object 3D points
+    obj_points_dict = {class_name: [] for class_name in id_to_class_map.values()}
 
-    # Normalize pixel coordinates using intrinsics
+    # # Normalize pixel coordinates using intrinsic matrix
+    # K_estimated = torch.tensor([
+    #     [2.69926114e+03, 0.00000000e+00, 1.52650052e+03],
+    #     [0.00000000e+00, 2.70273810e+03, 1.97478860e+03],
+    #     [0.00000000e+00, 0.00000000e+00, 1.00000000e+00]
+    # ], dtype=torch.float32, device=device)
 
-    K_estimated = torch.tensor( [[2.69926114e+03, 0.00000000e+00, 1.52650052e+03],
-    [0.00000000e+00, 2.70273810e+03, 1.97478860e+03],
-    [0.00000000e+00, 0.00000000e+00, 1.00000000e+00]]
-    , dtype=torch.float32, device=device)
+    # if keyframe.K is not None:
+    #     K_estimated = keyframe.K  # Use provided intrinsic matrix if available
 
-    if keyframe.K != None:
-        K_estimated = keyframe.K
+    # If we assume the keyframe.X_canon already contains 3D world coordinates, meaning no projection step is required, we might not need K. But this assumption may be incorrect
 
-    obj_pixels_norm = torch.linalg.solve(K_estimated, obj_pixels_homog)  # K^-1 * [x, y, 1]
+    # Loop over each segmentation ID and extract its corresponding 3D points
+    for segmented_id in id_to_class_map.keys():
+        class_name = id_to_class_map[segmented_id]
 
-    # Find corresponding 3D points
-    obj_points_3D = []
-    for i in range(obj_pixels.shape[0]):
-        pixel = obj_pixels_norm[:, i]
-        distances = torch.norm(keyframe.X_canon - pixel, dim=1)  # Compute distances
-        closest_idx = torch.argmin(distances)
-        obj_points_3D.append(keyframe.X_canon[closest_idx])
+        # Create a mask for the current object ID
+        obj_mask = (seg_mask_torch == segmented_id)
 
-    return torch.stack(obj_points_3D)  # Shape: (N, 3)
+        # Find all 3D points corresponding to the mask
+        valid_3D_points = keyframe.X_canon[obj_mask.flatten()]  # Select only relevant points
 
-def compute_distance_torch(obj_points_3D):
-    """Compute object distance using PyTorch tensors."""
-    obj_center = torch.mean(obj_points_3D, dim=0)  # Get centroid
-    distance = torch.norm(obj_center)  # Euclidean distance
+        if valid_3D_points.shape[0] > 0:
+            obj_points_dict[class_name] = valid_3D_points  # Assign 3D points for this object
 
-    return distance.item()  # Convert to float for readability
+    return obj_points_dict  # Dictionary mapping class names to their respective 3D points
+
+
+def compute_distance_torch(obj_points_dict):
+    object_distances = {}
+
+    for class_name, obj_points_3D in obj_points_dict.items():
+        if obj_points_3D.shape[0] > 0:  # Ensure there are valid points
+            obj_center = torch.mean(obj_points_3D, dim=0)  # Compute centroid
+            distance = torch.norm(obj_center)  # Euclidean distance from origin
+            object_distances[class_name] = distance.item()  # Store as float
+        
+    return object_distances  # Dictionary mapping class names to distances
 
 def computeSegmentationAndObjectDistance(keyframes, c_conf_threshold):
     pointclouds = []
@@ -211,13 +212,14 @@ def computeSegmentationAndObjectDistance(keyframes, c_conf_threshold):
         seg_mask_torch = torch.tensor(seg_mask, device=device, dtype=torch.float32)
 
         # Extract 3D points corresponding to the segmentation mask
-        obj_points_3D = extract_segmented_points_torch(seg_mask_torch, keyframe, id_to_class_mapping)
+        obj_points_dict = extract_segmented_points_torch(seg_mask_torch, keyframe, id_to_class_mapping)
 
         # Compute distance from camera
-        distance = compute_distance_torch(obj_points_3D)
+        object_distances = compute_distance_torch(obj_points_dict)
 
-        print(f"Segmented object distance: {distance:.3f} meters")
-        
+        for class_name, dist in object_distances.items():
+            print(f"{class_name}: {dist:.3f} meters")
+
         
         pointclouds.append(pW[valid])
     pointclouds = np.concatenate(pointclouds, axis=0)
