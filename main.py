@@ -192,6 +192,7 @@ if __name__ == "__main__":
         sys.exit(0)
     K = None
     if use_calib:
+        print("K set")
         K = torch.from_numpy(dataset.camera_intrinsics.K_frame).to(
             device, dtype=torch.float32
         )
@@ -239,6 +240,7 @@ if __name__ == "__main__":
             break
 
         timestamp, img = dataset[i]
+
         if save_frames:
             frames.append(img)
 
@@ -248,6 +250,7 @@ if __name__ == "__main__":
             if i == 0
             else states.get_frame().T_WC
         )
+
         frame = create_frame(i, img, T_WC, img_size=dataset.img_size, device=device)
 
         if mode == Mode.INIT:

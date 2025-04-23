@@ -90,16 +90,13 @@ def save_reconstruction(savedir, filename, keyframes, c_conf_threshold):
 
     save_ply(savedir / filename, pointclouds, colors)
 
-#EDIT- RAIZA
-
 def segment(im):
 
-    simplf_classes = ['person', 'bicycle', 'car', 'motorcycle',  'bus', 'train', 'truck', 'boat', 'traffic light', 'backpack',
-                  'fire hydrant', 'stop sign', 'parking meter', 'bench', 'suitcase']
+    simplf_classes = ['person', 'car', 'motorcycle',  'bus', 'train', 'truck', 'traffic light','stop sign']
     
     cfg = get_cfg()   # get a fresh new config
     cfg.MODEL.DEVICE = "cpu"
-    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.5  # Set confidence threshold
+    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.3  # Set confidence threshold
 
     cfg.merge_from_file(model_zoo.get_config_file("Misc/panoptic_fpn_R_101_dconv_cascade_gn_3x.yaml"))
     cfg.MODEL.WEIGHTS = "detectron2://Misc/panoptic_fpn_R_101_dconv_cascade_gn_3x/139797668/model_final_be35db.pkl"
@@ -114,11 +111,16 @@ def segment(im):
 
     mask = panoptic_seg.cpu().numpy() if torch.is_tensor(panoptic_seg) else panoptic_seg
     filtered_mask = np.zeros_like(mask)
+    id_to_class_map = {}
 
     for seg in segments_info:
         class_name = meta.thing_classes[seg['category_id']] if seg['isthing'] else meta.stuff_classes[seg['category_id']]
         if class_name in simplf_classes:
+            print(f"Class name {class_name}: with id: {seg['id']}")
             filtered_mask[mask == seg['id']] = seg['id']  # retain only selected ids
+            id_to_class_map[seg['id']] = class_name  # Store mapping
+
+    #np.savetxt("../segmask.txt", filtered_mask, delimiter=" ", fmt="%.4f")  # Saves with 4 decim
 
     image_rgb = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
     v = Visualizer(
@@ -141,8 +143,47 @@ def segment(im):
     plt.savefig("Fig_1.png")
     plt.show()
 
-    return filtered_mask
+    return filtered_mask, id_to_class_map
 
+def extract_segmented_points_torch(seg_mask_torch, keyframe, id_to_class_mapping):
+    device = "cuda:0"
+    
+    # Get pixel locations of segmented regions
+    obj_pixels = torch.nonzero(seg_mask_torch > 0)  # Shape: (N, 2)
+
+    # Convert pixels to homogeneous form
+    obj_pixels_homog = torch.cat([
+        obj_pixels, torch.ones((obj_pixels.shape[0], 1), device=device)
+    ], dim=1).T  # Shape: (3, N)
+
+    # Normalize pixel coordinates using intrinsics
+
+    K_estimated = torch.tensor( [[2.69926114e+03, 0.00000000e+00, 1.52650052e+03],
+    [0.00000000e+00, 2.70273810e+03, 1.97478860e+03],
+    [0.00000000e+00, 0.00000000e+00, 1.00000000e+00]]
+    , dtype=torch.float32, device=device)
+
+    if keyframe.K != None:
+        K_estimated = keyframe.K
+
+    obj_pixels_norm = torch.linalg.solve(K_estimated, obj_pixels_homog)  # K^-1 * [x, y, 1]
+
+    # Find corresponding 3D points
+    obj_points_3D = []
+    for i in range(obj_pixels.shape[0]):
+        pixel = obj_pixels_norm[:, i]
+        distances = torch.norm(keyframe.X_canon - pixel, dim=1)  # Compute distances
+        closest_idx = torch.argmin(distances)
+        obj_points_3D.append(keyframe.X_canon[closest_idx])
+
+    return torch.stack(obj_points_3D)  # Shape: (N, 3)
+
+def compute_distance_torch(obj_points_3D):
+    """Compute object distance using PyTorch tensors."""
+    obj_center = torch.mean(obj_points_3D, dim=0)  # Get centroid
+    distance = torch.norm(obj_center)  # Euclidean distance
+
+    return distance.item()  # Convert to float for readability
 
 def computeSegmentationAndObjectDistance(keyframes, c_conf_threshold):
     pointclouds = []
@@ -164,12 +205,22 @@ def computeSegmentationAndObjectDistance(keyframes, c_conf_threshold):
         numpy_img = np.transpose(numpy_img, (1, 2, 0))  # Convert to (H, W, C)
         numpy_img = (numpy_img * 255).astype(np.uint8)  # Convert normalized float32 to uint8
 
-        seg  = segment(numpy_img)
+        seg_mask, id_to_class_mapping  = segment(numpy_img)
+        device = "cuda:0"
+        # Convert segmentation mask to PyTorch tensor
+        seg_mask_torch = torch.tensor(seg_mask, device=device, dtype=torch.float32)
+
+        # Extract 3D points corresponding to the segmentation mask
+        obj_points_3D = extract_segmented_points_torch(seg_mask_torch, keyframe, id_to_class_mapping)
+
+        # Compute distance from camera
+        distance = compute_distance_torch(obj_points_3D)
+
+        print(f"Segmented object distance: {distance:.3f} meters")
+        
         
         pointclouds.append(pW[valid])
     pointclouds = np.concatenate(pointclouds, axis=0)
-
-#EDIT- RAIZAEND
 
 
 def save_keyframes(savedir, timestamps, keyframes: SharedKeyframes):
