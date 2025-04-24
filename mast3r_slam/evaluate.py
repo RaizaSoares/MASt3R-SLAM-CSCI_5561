@@ -109,7 +109,7 @@ def segment(im):
 
     for seg in segments_info:
         class_name = meta.thing_classes[seg['category_id']] if seg['isthing'] else meta.stuff_classes[seg['category_id']]
-        print(class_name)
+        #print(class_name)
         if class_name in simplf_classes:
             # print(f"Class name {class_name}: with id: {seg['id']}")
             filtered_mask[mask == seg['id']] = seg['id']  # retain only selected ids
@@ -135,14 +135,13 @@ def segment(im):
     ax[0].axis("off")
     ax[1].axis("off")
     plt.tight_layout()
-    plt.savefig("Fig_1.png")
     plt.show()
 
     return filtered_mask, id_to_class_map
 
 def extract_segmented_points_torch(seg_mask_torch, keyframe, id_to_class_map):
     """Extract 3D points for each segmented object using PyTorch."""
-    device = keyframe.K.device if keyframe.K is not None else "cuda:0"
+    #device = keyframe.K.device if keyframe.K is not None else "cuda:0"
 
     # Initialize a dictionary to store segmented object 3D points
     obj_points_dict = {class_name: [] for class_name in id_to_class_map.values()}
@@ -170,18 +169,24 @@ def extract_segmented_points_torch(seg_mask_torch, keyframe, id_to_class_map):
         valid_3D_points = keyframe.X_canon[obj_mask.flatten()]  # Select only relevant points
 
         if valid_3D_points.shape[0] > 0:
-            obj_points_dict[class_name] = valid_3D_points  # Assign 3D points for this object
+            valid_3D_points_world = keyframe.T_WC.act(valid_3D_points)  # Convert to world space
+            obj_points_dict[class_name] = valid_3D_points_world  # Assign transformed 3D points
 
     return obj_points_dict  # Dictionary mapping class names to their respective 3D points
 
 
-def compute_distance_torch(obj_points_dict):
+def compute_distance_torch(obj_points_dict, keyframe):
+
+    #obj_points_dict are already in world coordinates
+    camera_center = keyframe.T_WC.translation()
+    #print("camera_center shape:", camera_center.shape)
+    camera_center_3D = camera_center[0, :3]  # Remove batch and take first three elements
     object_distances = {}
 
     for class_name, obj_points_3D in obj_points_dict.items():
         if obj_points_3D.shape[0] > 0:  # Ensure there are valid points
             obj_center = torch.mean(obj_points_3D, dim=0)  # Compute centroid
-            distance = torch.norm(obj_center)  # Euclidean distance from origin
+            distance = torch.norm(obj_center - camera_center_3D)  # Distance from camera center
             object_distances[class_name] = distance.item()  # Store as float
         
     return object_distances  # Dictionary mapping class names to distances
@@ -215,7 +220,7 @@ def computeSegmentationAndObjectDistance(keyframes, c_conf_threshold):
         obj_points_dict = extract_segmented_points_torch(seg_mask_torch, keyframe, id_to_class_mapping)
 
         # Compute distance from camera
-        object_distances = compute_distance_torch(obj_points_dict)
+        object_distances = compute_distance_torch(obj_points_dict, keyframe=keyframe)
 
         for class_name, dist in object_distances.items():
             print(f"{class_name}: {dist:.3f} meters")
