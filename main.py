@@ -218,7 +218,7 @@ if __name__ == "__main__":
     fps_timer = time.time()
 
     frames = []
-
+    seg_processed_frame_ids = []
     while True:
         mode = states.get_mode()
         msg = try_get_msg(viz2main)
@@ -284,7 +284,11 @@ if __name__ == "__main__":
 
         run_backend(states, keyframes)
 
-        eval.computeSegmentationAndObjectDistance(keyframes=keyframes, c_conf_threshold=last_msg.C_conf_threshold)
+        # print("Printing T_WC")
+        # print(frame.T_WC.translation())
+        # print(frame.T_WC.matrix())
+
+        seg_processed_frame_ids = eval.computeSegmentationAndObjectDistance(keyframes, seg_processed_frame_ids, c_conf_threshold=last_msg.C_conf_threshold)
 
         # log time
         if i % 30 == 0:

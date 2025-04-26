@@ -84,14 +84,14 @@ def save_reconstruction(savedir, filename, keyframes, c_conf_threshold):
 
     save_ply(savedir / filename, pointclouds, colors)
 
-def segment(im):
 
-    simplf_classes = ['person', 'car', 'motorcycle',  'bus', 'train', 'truck', 'traffic light','stop sign', 'building']
-    
+def segment(im):
+    simplf_classes = ['person', 'car', 'motorcycle', 'bus', 'train', 'truck', 
+                      'traffic light', 'stop sign', 'building']
+
     cfg = get_cfg()   # get a fresh new config
     cfg.MODEL.DEVICE = "cpu"
     cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.5  # Set confidence threshold
-
     cfg.merge_from_file(model_zoo.get_config_file("Misc/panoptic_fpn_R_101_dconv_cascade_gn_3x.yaml"))
     cfg.MODEL.WEIGHTS = "detectron2://Misc/panoptic_fpn_R_101_dconv_cascade_gn_3x/139797668/model_final_be35db.pkl"
 
@@ -100,37 +100,54 @@ def segment(im):
     panoptic_seg, segments_info = outputs["panoptic_seg"]
 
     meta = MetadataCatalog.get(cfg.DATASETS.TRAIN[0])
-    id_to_class = {k['id']: meta.thing_classes[k['category_id']] 
-                   for k in segments_info if k['isthing']}
-
     mask = panoptic_seg.cpu().numpy() if torch.is_tensor(panoptic_seg) else panoptic_seg
     filtered_mask = np.zeros_like(mask)
     id_to_class_map = {}
 
+    image_rgb = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
     for seg in segments_info:
         class_name = meta.thing_classes[seg['category_id']] if seg['isthing'] else meta.stuff_classes[seg['category_id']]
-        #print(class_name)
         if class_name in simplf_classes:
-            # print(f"Class name {class_name}: with id: {seg['id']}")
-            filtered_mask[mask == seg['id']] = seg['id']  # retain only selected ids
-            id_to_class_map[seg['id']] = f"{class_name} (ID: {seg['id']})"  # Append segid since there could be multiple things of the same class
+            filtered_mask[mask == seg['id']] = seg['id']
+            id_to_class_map[seg['id']] = f"{class_name} (ID: {seg['id']})"  # Append segmentation ID
 
-    #np.savetxt("../segmask.txt", filtered_mask, delimiter=" ", fmt="%.4f")
-
-    image_rgb = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
+    # Initialize Detectron2 Visualizer
     v = Visualizer(
-    image_rgb, 
-    MetadataCatalog.get(cfg.DATASETS.TRAIN[0]), 
-    scale=1.2, 
-    instance_mode=ColorMode.IMAGE_BW  # Ensures masks are overlaid properly
-)
-    out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
+        image_rgb, 
+        MetadataCatalog.get(cfg.DATASETS.TRAIN[0]), 
+        scale=1.2, 
+        instance_mode=ColorMode.IMAGE_BW  # Ensures masks are overlaid properly
+    )
+
+    mask2_filtered = np.where(np.isin(panoptic_seg, list(id_to_class_map.keys())), panoptic_seg, 0)
+    mask3_indices = [i for i, seg in enumerate(segments_info) if seg['id'] in id_to_class_map]
+
+    # Ensure Tensor format for compatibility with Detectron2
+    mask2_tensor = torch.tensor(mask2_filtered, dtype=torch.int64, device=panoptic_seg.device)
+
+    # Pass to visualization function
+    out = v.draw_panoptic_seg_predictions(mask2_tensor, [segments_info[i] for i in mask3_indices])
+  
+    # Overlay segmentation IDs directly on image
+    segmented_image = out.get_image()
+
+    for seg in segments_info:
+            # Get mask indices for current object
+            mask_indices = np.argwhere(filtered_mask == seg['id'])  # Find pixels belonging to the object
+            if mask_indices.shape[0] > 50:  # Avoid very small segments
+                center_x, center_y = mask_indices[:, 1].mean().astype(int), mask_indices[:, 0].mean().astype(int)
+
+                # Draw segmentation ID on image. TODO: This does not seem to work well :(
+                cv2.putText(segmented_image, f"ID: {seg['id']}", (center_x, center_y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 0, 0), 1, cv2.LINE_AA)
+
+    # Display results with IDs on objects
     fig, ax = plt.subplots(1, 2, figsize=(16, 9))
     ax[0].imshow(image_rgb)
-    ax[1].imshow(out.get_image())
+    ax[1].imshow(segmented_image)
 
     ax[0].set_title('Original RGB Frame')
-    ax[1].set_title('Segmented Frame')
+    ax[1].set_title('Segmented Frame with IDs')
 
     ax[0].axis("off")
     ax[1].axis("off")
@@ -175,24 +192,45 @@ def extract_segmented_points_torch(seg_mask_torch, keyframe, id_to_class_map):
     return obj_points_dict  # Dictionary mapping class names to their respective 3D points
 
 
-def compute_distance_torch(obj_points_dict, keyframe):
+def compute_distance_torch3D(obj_points_dict, keyframe):
 
     #obj_points_dict are already in world coordinates
     camera_center = keyframe.T_WC.translation()
     #print("camera_center shape:", camera_center.shape)
     camera_center_3D = camera_center[0, :3]  # Remove batch and take first three elements
-    object_distances = {}
+    object_info = {}  # Store distances and angles
+
+    print(f"Camera center {camera_center_3D}")
 
     for class_name, obj_points_3D in obj_points_dict.items():
-        if obj_points_3D.shape[0] > 0:  # Ensure there are valid points
+        if obj_points_3D.shape[0] > 0:
             obj_center = torch.mean(obj_points_3D, dim=0)  # Compute centroid
-            distance = torch.norm(obj_center - camera_center_3D)  # Distance from camera center
-            object_distances[class_name] = distance.item()  # Store as float
-        
-    return object_distances  # Dictionary mapping class names to distances
+            distance = torch.norm(obj_center - camera_center_3D)  # Distance from camera
 
-def computeSegmentationAndObjectDistance(keyframes, c_conf_threshold):
-    pointclouds = []
+            object_direction3d = obj_center - camera_center_3D  # Extract X, Y position
+            #object_direction = object_direction3d[:2] 
+            # TO DO: Extract more meaningful info from angles wrt camera 
+            # angle_radians = torch.atan2(object_direction[1], object_direction[0])  # Compute angle in radians
+            # angle_degrees = torch.rad2deg(angle_radians)  # Convert to degrees
+
+            if object_direction3d[0] < 0:
+                direction = f"to your left."
+            else:
+                direction = f"to your right."
+
+            # Store results
+            object_info[class_name] = {
+                "distance_meters": distance.item(),
+                "direction": direction
+            }
+    
+    for class_name, info in object_info.items():
+        print(f"{class_name}: {info['distance_meters']:.3f} meters, {info['direction']}")
+
+    return object_info 
+
+def computeSegmentationAndObjectDistance(keyframes, seg_processed_frame_ids, c_conf_threshold):
+    #pointclouds = []
     for i in range(len(keyframes)):
         keyframe = keyframes[i]
         if config["use_calib"]:
@@ -200,34 +238,34 @@ def computeSegmentationAndObjectDistance(keyframes, c_conf_threshold):
                 keyframe.img_shape.flatten()[:2], keyframe.X_canon[None], keyframe.K
             )
             keyframe.X_canon = X_canon.squeeze(0)
-        pW = keyframe.T_WC.act(keyframe.X_canon).cpu().numpy().reshape(-1, 3)
-        valid = (
-            keyframe.get_average_conf().cpu().numpy().astype(np.float32).reshape(-1)
-            > c_conf_threshold
-        )
+        # pW = keyframe.T_WC.act(keyframe.X_canon).cpu().numpy().reshape(-1, 3)
+        # valid = (
+        #     keyframe.get_average_conf().cpu().numpy().astype(np.float32).reshape(-1)
+        #     > c_conf_threshold
+        # )
 
-        img = keyframe.img
-        numpy_img = img.cpu().numpy()
-        numpy_img = np.transpose(numpy_img, (1, 2, 0))  # Convert to (H, W, C)
-        numpy_img = (numpy_img * 255).astype(np.uint8)  # Convert normalized float32 to uint8
+        if keyframe.frame_id not in seg_processed_frame_ids: #new frame
+            img = keyframe.img
+            numpy_img = img.cpu().numpy()
+            numpy_img = np.transpose(numpy_img, (1, 2, 0))  # Convert to (H, W, C)
+            numpy_img = (numpy_img * 255).astype(np.uint8)  # Convert normalized float32 to uint8
 
-        seg_mask, id_to_class_mapping  = segment(numpy_img)
-        device = "cuda:0"
-        # Convert segmentation mask to PyTorch tensor
-        seg_mask_torch = torch.tensor(seg_mask, device=device, dtype=torch.float32)
+            seg_mask, id_to_class_mapping  = segment(numpy_img)
+            device = "cuda:0"
+            # Convert segmentation mask to PyTorch tensor
+            seg_mask_torch = torch.tensor(seg_mask, device=device, dtype=torch.float32)
 
-        # Extract 3D points corresponding to the segmentation mask
-        obj_points_dict = extract_segmented_points_torch(seg_mask_torch, keyframe, id_to_class_mapping)
+            # Extract 3D points corresponding to the segmentation mask
+            obj_points_dict = extract_segmented_points_torch(seg_mask_torch, keyframe, id_to_class_mapping)
 
-        # Compute distance from camera
-        object_distances = compute_distance_torch(obj_points_dict, keyframe=keyframe)
-
-        for class_name, dist in object_distances.items():
-            print(f"{class_name}: {dist:.3f} meters")
+            # Compute distance from camera
+            compute_distance_torch3D(obj_points_dict, keyframe=keyframe)
+            seg_processed_frame_ids.append(keyframe.frame_id)
 
         
-        pointclouds.append(pW[valid])
-    pointclouds = np.concatenate(pointclouds, axis=0)
+        #pointclouds.append(pW[valid])
+    #pointclouds = np.concatenate(pointclouds, axis=0)
+    return seg_processed_frame_ids
 
 
 def save_keyframes(savedir, timestamps, keyframes: SharedKeyframes):
