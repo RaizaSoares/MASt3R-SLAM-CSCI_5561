@@ -132,14 +132,15 @@ def segment(im):
     segmented_image = out.get_image()
 
     for seg in segments_info:
+            if seg['id'] not in id_to_class_map.keys():
+                continue
             # Get mask indices for current object
             mask_indices = np.argwhere(filtered_mask == seg['id'])  # Find pixels belonging to the object
-            if mask_indices.shape[0] > 50:  # Avoid very small segments
-                center_x, center_y = mask_indices[:, 1].mean().astype(int), mask_indices[:, 0].mean().astype(int)
+            center_x, center_y = mask_indices[:, 1].mean().astype(int), mask_indices[:, 0].mean().astype(int)
 
-                # Draw segmentation ID on image. TODO: This does not seem to work well :(
-                cv2.putText(segmented_image, f"ID: {seg['id']}", (center_x, center_y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 0, 0), 1, cv2.LINE_AA)
+            # Draw segmentation ID on image. TODO: This does not seem to work well :(
+            cv2.putText(segmented_image, f"ID: {seg['id']}", (center_x, center_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 0, 0), 1, cv2.LINE_AA)
 
     # Display results with IDs on objects
     fig, ax = plt.subplots(1, 2, figsize=(16, 9))
@@ -194,7 +195,7 @@ def extract_segmented_points_torch(seg_mask_torch, keyframe, id_to_class_map):
 
 def compute_distance_torch3D(obj_points_dict, keyframe):
 
-    #obj_points_dict are already in world coordinates
+    #obj_points_dict are already in camera coordinates
     camera_center = keyframe.T_WC.translation()
     #print("camera_center shape:", camera_center.shape)
     camera_center_3D = camera_center[0, :3]  # Remove batch and take first three elements
@@ -209,7 +210,7 @@ def compute_distance_torch3D(obj_points_dict, keyframe):
 
             object_direction3d = obj_center - camera_center_3D  # Extract X, Y position
             #object_direction = object_direction3d[:2] 
-            # TO DO: Extract more meaningful info from angles wrt camera 
+            # TODO: Extract more meaningful info from angles wrt camera 
             # angle_radians = torch.atan2(object_direction[1], object_direction[0])  # Compute angle in radians
             # angle_degrees = torch.rad2deg(angle_radians)  # Convert to degrees
 
