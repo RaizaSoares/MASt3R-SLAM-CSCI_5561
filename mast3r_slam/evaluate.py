@@ -91,7 +91,7 @@ def segment(im):
 
     cfg = get_cfg()   # get a fresh new config
     cfg.MODEL.DEVICE = "cpu"
-    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.5  # Set confidence threshold
+    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.8  # Set confidence threshold
     cfg.merge_from_file(model_zoo.get_config_file("Misc/panoptic_fpn_R_101_dconv_cascade_gn_3x.yaml"))
     cfg.MODEL.WEIGHTS = "detectron2://Misc/panoptic_fpn_R_101_dconv_cascade_gn_3x/139797668/model_final_be35db.pkl"
 
@@ -139,21 +139,19 @@ def segment(im):
             center_x, center_y = mask_indices[:, 1].mean().astype(int), mask_indices[:, 0].mean().astype(int)
 
             # Draw segmentation ID on image. TODO: This does not seem to work well :(
-            cv2.putText(segmented_image, f"ID: {seg['id']}", (center_x, center_y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 0, 0), 1, cv2.LINE_AA)
+            # cv2.putText(segmented_image, f"ID: {seg['id']}", (center_x, center_y),
+            #             cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 0, 0), 1, cv2.LINE_AA)
 
     # Display results with IDs on objects
-    fig, ax = plt.subplots(1, 2, figsize=(16, 9))
-    ax[0].imshow(image_rgb)
-    ax[1].imshow(segmented_image)
+    fig, ax = plt.subplots(figsize=(16, 9))  # No need for an array of axes
+    ax.imshow(segmented_image)  # Display only the segmented frame
 
-    ax[0].set_title('Original RGB Frame')
-    ax[1].set_title('Segmented Frame with IDs')
+    ax.set_title('Segmented Frame')
+    ax.axis("off")
 
-    ax[0].axis("off")
-    ax[1].axis("off")
     plt.tight_layout()
     plt.show()
+
 
     return filtered_mask, id_to_class_map
 
@@ -201,7 +199,7 @@ def compute_distance_torch3D(obj_points_dict, keyframe):
     camera_center_3D = camera_center[0, :3]  # Remove batch and take first three elements
     object_info = {}  # Store distances and angles
 
-    print(f"Camera center {camera_center_3D}")
+    #print(f"Camera center {camera_center_3D}")
 
     for class_name, obj_points_3D in obj_points_dict.items():
         if obj_points_3D.shape[0] > 0:
@@ -225,9 +223,10 @@ def compute_distance_torch3D(obj_points_dict, keyframe):
                 "direction": direction
             }
     
+    print("\n*****************Distance Estimations******************")
     for class_name, info in object_info.items():
         print(f"{class_name}: {info['distance_meters']:.3f} meters, {info['direction']}")
-
+    print("\n")
     return object_info 
 
 def computeSegmentationAndObjectDistance(keyframes, seg_processed_frame_ids, c_conf_threshold):
