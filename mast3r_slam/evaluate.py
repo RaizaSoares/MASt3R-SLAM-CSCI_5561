@@ -87,7 +87,7 @@ def save_reconstruction(savedir, filename, keyframes, c_conf_threshold):
 
 def segment(im):
     simplf_classes = ['person', 'car', 'motorcycle', 'bus', 'train', 'truck', 
-                      'traffic light', 'stop sign', 'building']
+                      'traffic light', 'stop sign', 'building'] #Modify interesting classes if needed
 
     cfg = get_cfg()   # get a fresh new config
     cfg.MODEL.DEVICE = "cpu"
@@ -138,12 +138,7 @@ def segment(im):
             mask_indices = np.argwhere(filtered_mask == seg['id'])  # Find pixels belonging to the object
             center_x, center_y = mask_indices[:, 1].mean().astype(int), mask_indices[:, 0].mean().astype(int)
 
-            # Draw segmentation ID on image. TODO: This does not seem to work well :(
-            # cv2.putText(segmented_image, f"ID: {seg['id']}", (center_x, center_y),
-            #             cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 0, 0), 1, cv2.LINE_AA)
-
-    # Display results with IDs on objects
-    fig, ax = plt.subplots(figsize=(16, 9))  # No need for an array of axes
+    fig, ax = plt.subplots(figsize=(16, 9))
     ax.imshow(segmented_image)  # Display only the segmented frame
 
     ax.set_title('Segmented Frame')
@@ -157,22 +152,11 @@ def segment(im):
 
 def extract_segmented_points_torch(seg_mask_torch, keyframe, id_to_class_map):
     """Extract 3D points for each segmented object using PyTorch."""
-    #device = keyframe.K.device if keyframe.K is not None else "cuda:0"
 
     # Initialize a dictionary to store segmented object 3D points
     obj_points_dict = {class_name: [] for class_name in id_to_class_map.values()}
 
-    # # Normalize pixel coordinates using intrinsic matrix
-    # K_estimated = torch.tensor([
-    #     [2.69926114e+03, 0.00000000e+00, 1.52650052e+03],
-    #     [0.00000000e+00, 2.70273810e+03, 1.97478860e+03],
-    #     [0.00000000e+00, 0.00000000e+00, 1.00000000e+00]
-    # ], dtype=torch.float32, device=device)
-
-    # if keyframe.K is not None:
-    #     K_estimated = keyframe.K  # Use provided intrinsic matrix if available
-
-    # If we assume the keyframe.X_canon already contains 3D world coordinates, meaning no projection step is required, we might not need K. But this assumption may be incorrect
+    # keyframe.X_canon already contains 3D world coordinates, meaning no projection step is required, we might not need K.
 
     # Loop over each segmentation ID and extract its corresponding 3D points
     for segmented_id in id_to_class_map.keys():
@@ -182,10 +166,10 @@ def extract_segmented_points_torch(seg_mask_torch, keyframe, id_to_class_map):
         obj_mask = (seg_mask_torch == segmented_id)
 
         # Find all 3D points corresponding to the mask
-        valid_3D_points = keyframe.X_canon[obj_mask.flatten()]  # Select only relevant points
+        valid_3D_points = keyframe.X_canon[obj_mask.flatten()] 
 
         if valid_3D_points.shape[0] > 0:
-            valid_3D_points_world = keyframe.T_WC.act(valid_3D_points)  # Convert to world space
+            valid_3D_points_world = keyframe.T_WC.act(valid_3D_points)  # Convert to common space so we can compare to camera center
             obj_points_dict[class_name] = valid_3D_points_world  # Assign transformed 3D points
 
     return obj_points_dict  # Dictionary mapping class names to their respective 3D points
@@ -198,8 +182,6 @@ def compute_distance_torch3D(obj_points_dict, keyframe):
     #print("camera_center shape:", camera_center.shape)
     camera_center_3D = camera_center[0, :3]  # Remove batch and take first three elements
     object_info = {}  # Store distances and angles
-
-    #print(f"Camera center {camera_center_3D}")
 
     for class_name, obj_points_3D in obj_points_dict.items():
         if obj_points_3D.shape[0] > 0:
@@ -217,7 +199,6 @@ def compute_distance_torch3D(obj_points_dict, keyframe):
             else:
                 direction = f"to your right."
 
-            # Store results
             object_info[class_name] = {
                 "distance_meters": distance.item(),
                 "direction": direction
@@ -238,11 +219,6 @@ def computeSegmentationAndObjectDistance(keyframes, seg_processed_frame_ids, c_c
                 keyframe.img_shape.flatten()[:2], keyframe.X_canon[None], keyframe.K
             )
             keyframe.X_canon = X_canon.squeeze(0)
-        # pW = keyframe.T_WC.act(keyframe.X_canon).cpu().numpy().reshape(-1, 3)
-        # valid = (
-        #     keyframe.get_average_conf().cpu().numpy().astype(np.float32).reshape(-1)
-        #     > c_conf_threshold
-        # )
 
         if keyframe.frame_id not in seg_processed_frame_ids: #new frame
             img = keyframe.img
@@ -262,9 +238,6 @@ def computeSegmentationAndObjectDistance(keyframes, seg_processed_frame_ids, c_c
             compute_distance_torch3D(obj_points_dict, keyframe=keyframe)
             seg_processed_frame_ids.append(keyframe.frame_id)
 
-        
-        #pointclouds.append(pW[valid])
-    #pointclouds = np.concatenate(pointclouds, axis=0)
     return seg_processed_frame_ids
 
 
